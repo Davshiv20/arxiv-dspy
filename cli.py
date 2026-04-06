@@ -1,8 +1,11 @@
-import config
-from papers import search_arxiv
-from ingestion import load_paper, chunk_text
-from retriever import build_index
-from rag import RAG, Summarizer
+from app.config import supabase  # noqa: F401 — triggers dspy.configure
+from sentence_transformers import SentenceTransformer
+from app.services.arxiv import search_arxiv
+from app.services.ingestion import load_paper, chunk_text
+from app.services.store import add_paper, retrieve_chunks, make_paper_id
+from app.services.rag import RAG, Summarizer
+
+embedder = SentenceTransformer("BAAI/bge-small-en-v1.5")
 
 
 def pick_paper(papers: list) -> dict:
@@ -14,36 +17,35 @@ def pick_paper(papers: list) -> dict:
 
 
 def main():
-    # 1. User drives the search
     topic = input("What topic do you want to explore? ")
     papers = search_arxiv(topic, max_results=5)
 
-    # 2. User picks a paper
     paper = pick_paper(papers)
     print(f"\nLoading: {paper['title']}")
 
-    # 3. Load + chunk + index
     text = load_paper(paper["pdf_url"])
     print(f"Extracted {len(text)} characters")
     chunks = chunk_text(text)
-    print(f"Created {len(chunks)} chunks, building FAISS index...")
-    build_index(chunks)
+    paper_id = make_paper_id(paper["pdf_url"])
+    num = add_paper(embedder, paper_id, paper["pdf_url"], paper["title"], text, chunks)
+    if num:
+        print(f"Created {num} chunks, stored in Supabase")
+    else:
+        print("Paper already indexed, reusing existing chunks")
 
-    # 4. Summarize
     print("\n--- SUMMARY ---")
     summarizer = Summarizer()
     summary = summarizer(document=text)
-    print(summary.summary)
+    print(summary.output.summary)
 
-    # 5. Interactive Q&A
     print("\n--- Q&A (type 'exit' to quit) ---")
-    rag = RAG()
+    rag = RAG(embedder)
     while True:
         question = input("\nQ: ")
         if question.lower() == "exit":
             break
-        answer = rag(question=question)
-        print(f"A: {answer.answer}")
+        answer = rag(question=question, paper_id=paper_id)
+        print(f"A: {answer.output.answer}")
 
 
 if __name__ == "__main__":
